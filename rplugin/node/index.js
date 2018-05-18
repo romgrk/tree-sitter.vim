@@ -27,9 +27,11 @@ module.exports = plugin => {
   try { plugin = new neovim.NvimPlugin() } catch(e) {}
 
   plugin.registerAutocmd('BufNewFile,BufReadPost', onBufferOpen, { pattern: '*', eval: 'expand("<afile>:p")' })
+  plugin.registerAutocmd('TextChanged,TextChangedI', onBufferChange, { pattern: '*', eval: 'expand("<afile>:p")' })
 
   plugin.registerCommand('TreeSitterGetCurrentNode', getCurrentNode, { sync: true })
-  plugin.registerCommand('TreeSitterColorize', colorize, { sync: false })
+  plugin.registerCommand('TreeSitterColorizeStart', colorizeStart, { sync: false })
+  plugin.registerCommand('TreeSitterColorizeStop', colorizeStop, { sync: false })
   // require('fs').writeFileSync('./debug.log', (typeof colorize + ':' + String(colorize)))
 }
 
@@ -58,35 +60,96 @@ async function onBufferOpen(name) {
   }
 }
 
+async function onBufferChange(name) {
+  if (!/\.js$/.test(name))
+    return
 
-async function colorize() {
-  log('colorize')
+  log('onBufferChange', name)
 
-  /* const buffer = await nvim.buffer
-   * const details = detailsByID[buffer.data]
-   * if (!details) {
-   *   log('No details')
-   *   return
-   * }
-   * const { tree, content } = details */
-
-  const buffer = await nvim.buffer
+  const buffer = await getBufferByName(name)
   const id = buffer.data
+  const details = detailsByID[id]
+
+  if (!details)
+    return
+
   const lines = await buffer.getLines()
 
   const content = lines.join('\n')
   const tree = parsers.javascript.parse(content)
 
-  log(tree.rootNode.toString())
+  detailsByID[id] = {
+    id,
+    buffer,
+    lines,
+    content,
+    tree,
+  }
+
+  colorize(id)
+}
+
+async function colorizeStop() {
+  const buffer = await nvim.buffer
+  const id = buffer.data
+  delete detailsByID[id]
+  await buffer.clearHighlight()
+}
+
+async function colorizeStart() {
+  log('startColorization')
+
+  const buffer = await nvim.buffer
+  const id = buffer.data
+  const lines = await buffer.getLines()
+
+  log('lines')
+
+  const content = lines.join('\n')
+  const tree = parsers.javascript.parse(content)
+
+  log('tree')
+  detailsByID[id] = {
+    id,
+    buffer,
+    lines,
+    content,
+    tree,
+  }
+  log('details')
+
+  try {
+    await colorize(id)
+  } catch(e) {
+    log('error', e.toString(), e.stack)
+  }
+  log('done')
+}
+
+async function colorize(id) {
+  log('colorize')
+
+  const {
+    buffer,
+    lines,
+    content,
+    tree,
+  } = detailsByID[id]
+
+  await buffer.clearHighlight()
 
   traverse(tree.rootNode, node => {
+    log(node.children.length === 0 ? '[leaf]' : '[branch]', node.type, content.slice(node.startIndex, node.endIndex).slice(0, 10))
 
     if (node.type === 'identifier' && node.parent.type === 'function')
       return highlight(buffer, node, 'Function')
 
     if (node.type === 'identifier' && node.parent.type === 'call_expression')
       return highlight(buffer, node, 'Function')
-    if (node.type === 'property_identifier' && node.parent.type === 'member_expression' && node.parent.parent.type === 'call_expression' && node === node.parent.children[node.parent.children.length - 1])
+    if (node.type === 'property_identifier'
+        && node.parent.type === 'member_expression'
+        && node.parent.parent.type === 'call_expression'
+        && equals(node, node.parent.children[node.parent.children.length - 1]))
       return highlight(buffer, node, 'Function')
 
     if (node.type === 'function' && getText(content, node) === 'function')
@@ -98,6 +161,9 @@ async function colorize() {
       return highlight(buffer, node, 'StorageClass')
 
     switch (node.type) {
+      case 'identifier':
+        highlight(buffer, node, 'Normal'); break;
+
       case '=':
       case '<=':
       case '>=':
@@ -121,6 +187,7 @@ async function colorize() {
 
       case '(':
       case ')':
+      case '${':
       case '{':
       case '}':
       case '[':
@@ -145,8 +212,10 @@ async function colorize() {
       case 'catch':
       case 'switch':
       case 'case':
+      case 'break':
       case 'return':
       case 'new':
+      case 'delete':
         highlight(buffer, node, 'Keyword'); break;
 
       case 'null':
@@ -161,6 +230,7 @@ async function colorize() {
         highlight(buffer, node, 'Number'); break;
 
       case 'string':
+      case 'template_string':
         highlight(buffer, node, 'String'); break;
 
       case 'regex':
@@ -170,8 +240,6 @@ async function colorize() {
       case 'let':
       case 'const':
         highlight(buffer, node, 'StorageClass'); break;
-
-      default: log(node.type, content.slice(node.startIndex, node.endIndex).slice(0, 10))
     }
   })
 }
@@ -223,6 +291,10 @@ function getText(content, node) {
   return content.slice(node.startIndex, node.endIndex)
 }
 
+function equals(node, other) {
+  return node.type === other.type && node.startIndex === other.startIndex && node.endIndex === other.endIndex
+}
+
 async function getBufferByName(name) {
   const buffers = await nvim.buffers
   const names = await Promise.all(buffers.map(b => b.name))
@@ -232,7 +304,9 @@ async function getBufferByName(name) {
 
 function log(...args) {
   const prefix = '[tree-sitter.vim]'
-  nvim.command(`echomsg '${prefix} ` + args.map(JSON.stringify).join(', ') + `'`)
+  const line = `${prefix} ` + args.map(JSON.stringify).join(', ')
+  nvim.command(`if !exists('g:lines') | let g:lines = [] | end`)
+  nvim.command(`call add(lines, '${line}')`)
 }
 
 function getParser(module) {
