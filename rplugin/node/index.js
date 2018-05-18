@@ -87,6 +87,7 @@ async function colorize() {
       return highlight(buffer, node, 'StorageClass')
 
     switch (node.type) {
+      case '=':
       case '<=':
       case '>=':
       case '===':
