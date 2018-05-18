@@ -62,20 +62,31 @@ async function onBufferOpen(name) {
 async function colorize() {
   log('colorize')
 
+  /* const buffer = await nvim.buffer
+   * const details = detailsByID[buffer.data]
+   * if (!details) {
+   *   log('No details')
+   *   return
+   * }
+   * const { tree, content } = details */
+
   const buffer = await nvim.buffer
-  const details = detailsByID[buffer.data]
+  const id = buffer.data
+  const lines = await buffer.getLines()
 
-  if (!details) {
-    log('No details')
-    return
-  }
+  const content = lines.join('\n')
+  const tree = parsers.javascript.parse(content)
 
-  const { tree, content } = details
+  log(tree.rootNode.toString())
 
-  let val = undefined
   traverse(tree.rootNode, node => {
 
     if (node.type === 'identifier' && node.parent.type === 'function')
+      return highlight(buffer, node, 'Function')
+
+    if (node.type === 'identifier' && node.parent.type === 'call_expression')
+      return highlight(buffer, node, 'Function')
+    if (node.type === 'property_identifier' && node.parent.type === 'member_expression' && node.parent.parent.type === 'call_expression' && node === node.parent.children[node.parent.children.length - 1])
       return highlight(buffer, node, 'Function')
 
     if (node.type === 'function' && getText(content, node) === 'function')
@@ -98,6 +109,13 @@ async function colorize() {
       case '-':
       case '+':
       case '!':
+      case '&&':
+      case '||':
+      case '&':
+      case '|':
+      case '>>':
+      case '<<':
+      case '?':
       case '...':
         highlight(buffer, node, 'Operator'); break;
 
@@ -119,12 +137,16 @@ async function colorize() {
       case 'async':
       case 'await':
       case 'for':
+      case 'in':
+      case 'of':
+      case 'do':
       case 'while':
       case 'try':
       case 'catch':
       case 'switch':
       case 'case':
       case 'return':
+      case 'new':
         highlight(buffer, node, 'Keyword'); break;
 
       case 'null':
@@ -134,6 +156,15 @@ async function colorize() {
       case 'true':
       case 'false':
         highlight(buffer, node, 'Boolean'); break;
+
+      case 'number':
+        highlight(buffer, node, 'Number'); break;
+
+      case 'string':
+        highlight(buffer, node, 'String'); break;
+
+      case 'regex':
+        highlight(buffer, node, 'Regexp'); break;
 
       case 'var':
       case 'let':
