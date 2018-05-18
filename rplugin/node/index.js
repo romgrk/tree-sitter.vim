@@ -72,17 +72,73 @@ async function colorize() {
 
   const { tree, content } = details
 
+  let val = undefined
   traverse(tree.rootNode, node => {
+
+    if (node.type === 'identifier' && node.parent.type === 'function')
+      return highlight(buffer, node, 'Function')
+
+    if (node.type === 'function' && getText(content, node) === 'function')
+      return highlight(buffer, node, 'Keyword')
+
+    if (node.type === 'property_identifier' && node.parent.type === 'pair')
+      return highlight(buffer, node, 'StorageClass')
+    if (node.type === 'shorthand_property_identifier' && node.parent.type === 'object')
+      return highlight(buffer, node, 'StorageClass')
+
     switch (node.type) {
+      case '<=':
+      case '>=':
+      case '===':
+      case '==':
+      case '=>':
+      case '*':
+      case '/':
+      case '-':
+      case '+':
+      case '!':
+      case '...':
+        highlight(buffer, node, 'Operator'); break;
+
       case '(':
       case ')':
-      case 'comment': highlight(buffer, node, 'Comment'); break;
+      case '{':
+      case '}':
+      case '[':
+      case ']':
+      case '.':
+      case ',':
+      case ';':
+      case ':':
+      case 'comment':
+        highlight(buffer, node, 'Comment'); break;
+
       case 'if':
       case 'else':
-      case 'return':  highlight(buffer, node, 'Keyword'); break;
+      case 'async':
+      case 'await':
+      case 'for':
+      case 'while':
+      case 'try':
+      case 'catch':
+      case 'switch':
+      case 'case':
+      case 'return':
+        highlight(buffer, node, 'Keyword'); break;
+
+      case 'null':
+      case 'undefined':
+        highlight(buffer, node, 'Constant'); break;
+
+      case 'true':
+      case 'false':
+        highlight(buffer, node, 'Boolean'); break;
+
       case 'var':
       case 'let':
-      case 'const':   highlight(buffer, node, 'StorageClass'); break;
+      case 'const':
+        highlight(buffer, node, 'StorageClass'); break;
+
       default: log(node.type, content.slice(node.startIndex, node.endIndex).slice(0, 10))
     }
   })
@@ -129,6 +185,10 @@ function highlight(buffer, node, hlGroup) {
   hls.forEach(hl => {
     buffer.addHighlight(hl)
   })
+}
+
+function getText(content, node) {
+  return content.slice(node.startIndex, node.endIndex)
 }
 
 async function getBufferByName(name) {
