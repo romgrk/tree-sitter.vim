@@ -27,7 +27,10 @@ module.exports = plugin => {
   try { plugin = new neovim.NvimPlugin() } catch(e) {}
 
   plugin.registerAutocmd('BufNewFile,BufReadPost', onBufferOpen, { pattern: '*', eval: 'expand("<afile>:p")' })
+
   plugin.registerCommand('TreeSitterGetCurrentNode', getCurrentNode, { sync: true })
+  plugin.registerCommand('TreeSitterColorize', colorize, { sync: false })
+  // require('fs').writeFileSync('./debug.log', (typeof colorize + ':' + String(colorize)))
 }
 
 
@@ -49,11 +52,41 @@ async function onBufferOpen(name) {
   detailsByID[id] = {
     id,
     buffer,
+    lines,
     content,
     tree,
   }
 }
 
+
+async function colorize() {
+  log('colorize')
+
+  const buffer = await nvim.buffer
+  const details = detailsByID[buffer.data]
+
+  if (!details) {
+    log('No details')
+    return
+  }
+
+  const { tree, content } = details
+
+  traverse(tree.rootNode, node => {
+    switch (node.type) {
+      case '(':
+      case ')':
+      case 'comment': highlight(buffer, node, 'Comment'); break;
+      case 'if':
+      case 'else':
+      case 'return':  highlight(buffer, node, 'Keyword'); break;
+      case 'var':
+      case 'let':
+      case 'const':   highlight(buffer, node, 'StorageClass'); break;
+      default: log(node.type, content.slice(node.startIndex, node.endIndex).slice(0, 10))
+    }
+  })
+}
 
 async function getCurrentNode() {
   const buffer = await nvim.buffer
@@ -77,6 +110,27 @@ async function getCurrentNode() {
  * Helpers
  */
 
+function traverse(node, fn) {
+  fn(node)
+  node.children.forEach(child => {
+    traverse(child, fn)
+  })
+}
+
+function highlight(buffer, node, hlGroup) {
+  const hls =
+    Array(node.endPosition.row - node.startPosition.row + 1)
+      .fill(node.startPosition.row)
+      .map((start, i) => ({ hlGroup, line: start + i, colStart: 0, colEnd: -1 }))
+
+  hls[0].colStart = node.startPosition.column
+  hls[hls.length - 1].colEnd = node.endPosition.column
+
+  hls.forEach(hl => {
+    buffer.addHighlight(hl)
+  })
+}
+
 async function getBufferByName(name) {
   const buffers = await nvim.buffers
   const names = await Promise.all(buffers.map(b => b.name))
@@ -95,4 +149,3 @@ function getParser(module) {
   parser.setLanguage(lang)
   return parser
 }
-
