@@ -4,11 +4,12 @@
 
 const neovim = require('neovim')
 const TreeSitter = require('tree-sitter')
-
-
 const parsers = {
   javascript: getParser('tree-sitter-javascript'),
 }
+
+const getDiff = require('../../diff.js')
+
 
 
 const detailsByID = {}
@@ -26,41 +27,46 @@ module.exports = plugin => {
   // To get completion only
   try { plugin = new neovim.NvimPlugin() } catch(e) {}
 
-  plugin.registerAutocmd('BufNewFile,BufReadPost', onBufferOpen, { pattern: '*', eval: 'expand("<afile>:p")' })
+  plugin.registerAutocmd('BufNewFile,BufReadPost',   onBufferOpen,   { pattern: '*', eval: 'expand("<afile>:p")' })
   plugin.registerAutocmd('TextChanged,TextChangedI', onBufferChange, { pattern: '*', eval: 'expand("<afile>:p")' })
 
   plugin.registerCommand('TreeSitterGetCurrentNode', getCurrentNode, { sync: true })
-  plugin.registerCommand('TreeSitterColorizeStart', colorizeStart, { sync: false })
-  plugin.registerCommand('TreeSitterColorizeStop', colorizeStop, { sync: false })
+  plugin.registerCommand('TreeSitterColorizeStart',  colorizeStart,  { sync: false })
+  plugin.registerCommand('TreeSitterColorizeStop',   colorizeStop,   { sync: false })
   // require('fs').writeFileSync('./debug.log', (typeof colorize + ':' + String(colorize)))
 }
 
+process.on('uncaughtException', (err) => {
+  log('Caught exception', err.stack);
+})
 
 
 
 async function onBufferOpen(name) {
-  if (!/\.js$/.test(name))
-    return
-
-  log('onBufferOpen', name)
-
-  const buffer = await getBufferByName(name)
-  const id = buffer.data
-  const lines = await buffer.getLines()
-
-  const content = lines.join('\n')
-  const tree = parsers.javascript.parse(content)
-
-  detailsByID[id] = {
-    id,
-    buffer,
-    lines,
-    content,
-    tree,
-  }
+/*   if (!/\.js$/.test(name))
+ *     return
+ * 
+ *   log('onBufferOpen', name)
+ * 
+ *   const buffer = await getBufferByName(name)
+ *   const id = buffer.data
+ *   const lines = await buffer.getLines()
+ * 
+ *   const content = lines.join('\n')
+ *   const tree = parsers.javascript.parse(content)
+ * 
+ *   detailsByID[id] = {
+ *     id,
+ *     buffer,
+ *     lines,
+ *     content,
+ *     tree,
+ *   } */
 }
 
 async function onBufferChange(name) {
+  log('onBufferChangePre', name)
+
   if (!/\.js$/.test(name))
     return
 
@@ -73,20 +79,30 @@ async function onBufferChange(name) {
   if (!details)
     return
 
-  const lines = await buffer.getLines()
+  const { content, lines, tree } = detailsByID[id]
 
-  const content = lines.join('\n')
-  const tree = parsers.javascript.parse(content)
+  const newLines = await buffer.getLines()
+  const newContent = lines.join('\n')
+
+  const diff = getDiff(lines, newLines)
+  log(diff)
+  /* log({
+   *   oldContent: lines.join('\n').slice(diff.startIndex, diff.oldEndIndex),
+   *   newContent: newLines.join('\n').slice(diff.startIndex, diff.newEndIndex),
+   * }) */
+
+  tree.edit(diff)
+  const newTree = parsers.javascript.parse(newContent, tree)
 
   detailsByID[id] = {
     id,
     buffer,
-    lines,
-    content,
-    tree,
+    lines: newLines,
+    content: newContent,
+    tree: newTree,
   }
 
-  colorize(id)
+  colorize(id, tree, diff)
 }
 
 async function colorizeStop() {
@@ -103,12 +119,9 @@ async function colorizeStart() {
   const id = buffer.data
   const lines = await buffer.getLines()
 
-  log('lines')
-
   const content = lines.join('\n')
   const tree = parsers.javascript.parse(content)
 
-  log('tree')
   detailsByID[id] = {
     id,
     buffer,
@@ -116,17 +129,15 @@ async function colorizeStart() {
     content,
     tree,
   }
-  log('details')
 
   try {
     await colorize(id)
   } catch(e) {
     log('error', e.toString(), e.stack)
   }
-  log('done')
 }
 
-async function colorize(id) {
+async function colorize(id, previousTree, diff) {
   log('colorize')
 
   const {
@@ -136,9 +147,21 @@ async function colorize(id) {
     tree,
   } = detailsByID[id]
 
-  await buffer.clearHighlight()
+  const previousIDs = new Set()
+  const nextIDs = new Set()
+
+  if (previousTree)
+    traverse(previousTree.rootNode, node => previousIDs.add(node.id))
+
+  const startRow = diff ? diff.startPosition.row : 0
+  const endRow   = diff ? Math.max(diff.newEndPosition.row, diff.oldEndPosition.row) : Infinity
+  await buffer.clearHighlight(diff ? { lineStart: startRow + 1, lineEnd: endRow + 1 } : undefined)
+  await delay(50)
 
   traverse(tree.rootNode, node => {
+    if (node.startPosition.row < startRow || node.endPosition.row > endRow)
+      return
+
     log(node.children.length === 0 ? '[leaf]' : '[branch]', node.type, content.slice(node.startIndex, node.endIndex).slice(0, 10))
 
     if (node.type === 'identifier' && node.parent.type === 'function')
@@ -242,7 +265,10 @@ async function colorize(id) {
         highlight(buffer, node, 'StorageClass'); break;
     }
   })
+
+  log('colorize end')
 }
+
 
 async function getCurrentNode() {
   const buffer = await nvim.buffer
@@ -266,6 +292,12 @@ async function getCurrentNode() {
  * Helpers
  */
 
+async function delay(ms) {
+  return new Promise((resolve, reject) => {
+    setTimeout(resolve, ms)
+  })
+}
+
 function traverse(node, fn) {
   fn(node)
   node.children.forEach(child => {
@@ -283,6 +315,7 @@ function highlight(buffer, node, hlGroup) {
   hls[hls.length - 1].colEnd = node.endPosition.column
 
   hls.forEach(hl => {
+    log(hl)
     buffer.addHighlight(hl)
   })
 }
